@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#142235">
+<title>Kanji · Test IA locale sécurisé</title>
+<style>
+:root{color-scheme:light;--ink:#162536;--sub:#516173;--blue:#2456ba;--line:#d8e0ec;--bg:#f3f6fa}
+*{box-sizing:border-box}body{background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;max-width:820px;margin:0 auto;padding:20px 14px 50px}
+main{background:white;padding:24px;border-radius:20px;box-shadow:0 4px 22px #17284012}h1{font-size:1.55rem;line-height:1.25;margin-top:0}h2{font-size:1.13rem;margin-top:24px}p{margin:8px 0 14px}.note{background:#fff6dd;border:1px solid #efd6a1;padding:12px;border-radius:10px}.good{background:#ebf8ef;border-color:#b6dfc4}.bad{background:#fff0ed;border-color:#efbbb3}.muted{color:var(--sub);font-size:.91rem}
+input,textarea,button{font:inherit}label{font-weight:650;display:block;margin:14px 0 5px}input,textarea{width:100%;border:1px solid #bac5d6;border-radius:10px;padding:11px;background:white;color:var(--ink)}
+.buttons{display:grid;grid-template-columns:1fr;gap:10px;margin:14px 0}button{border:0;border-radius:10px;padding:13px 14px;background:var(--blue);font-weight:650;color:white;text-align:left;cursor:pointer}button.secondary{background:#e7edf8;color:#14386d}button:disabled{cursor:not-allowed;opacity:.48}button small{display:block;font-size:.8rem;font-weight:400;opacity:.94}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#eff3f9;border-radius:9px;padding:12px;line-height:1.6;min-height:60px}progress{width:100%;height:16px;margin-top:8px}code{word-break:break-word}#error{display:none}.tiny{font-size:.85rem;color:var(--sub)}
+</style>
+</head>
+<body><main>
+<h1>🈶 Kanji — Test IA locale (version corrigée)</h1>
+<p>Ce test ne modifie pas tes flashcards. Il sert à mesurer ce que ton téléphone peut réellement exécuter, sans abonnement ni clé API.</p>
+<p class="note"><strong>Important :</strong> utilise cette page depuis une adresse <strong>https://</strong> (par exemple GitHub Pages), et <strong>pas</strong> depuis <code>content://downloads/</code> ou <code>file://</code>. Ferme les autres onglets avant de lancer le modèle.</p>
+<h2>1. Diagnostic du navigateur</h2>
+<div id="diagnostic" class="note">Analyse en cours…</div>
+<button id="recheck" class="secondary" type="button">↻ Actualiser le diagnostic</button>
+<h2>2. Génération</h2>
+<label for="kanji">Kanji à employer</label><input id="kanji" value="山、川、田、中、日、人" autocomplete="off" spellcheck="false">
+<div class="buttons">
+<button id="small" disabled type="button">Test léger — 135 millions de paramètres <small>SmolLM2 (≈182 Mo), processeur uniquement. Test de compatibilité : japonais possiblement incorrect.</small></button>
+<button id="japanese" disabled type="button">Test japonais expérimental — 270 millions de paramètres <small>Gemma 3 (≈273 Mo), accélération WebGPU nécessaire. Meilleur candidat pour le japonais, sans garantie de qualité.</small></button>
+</div>
+<p class="muted">Commence par « Test léger ». Si cela fonctionne, teste ensuite le mode japonais seulement si WebGPU est disponible. Le pourcentage indique le <em>téléchargement</em>, pas l'initialisation.</p>
+<p id="status" aria-live="polite">Prêt.</p><progress id="progress" max="100" value="0" hidden></progress>
+<div id="error" class="note bad"></div>
+<h2>3. Texte généré</h2><pre id="output">Aucun texte généré pour le moment.</pre>
+<h2>4. Rapport technique</h2>
+<pre id="log">En attente…</pre><button id="copy" class="secondary" type="button">Copier le rapport</button>
+<p class="tiny">Les modèles et la bibliothèque JavaScript sont téléchargés depuis des services publics (Hugging Face et jsDelivr). Après la mise en cache, la génération est locale. Ne saisis aucune donnée personnelle dans les instructions.</p>
+</main>
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const modelSettings = {
+  small: {id:'onnx-community/SmolLM2-135M-Instruct-ONNX-MHA',device:'wasm',dtype:'q4',name:'SmolLM2-135M (CPU)'},
+  japanese: {id:'onnx-community/gemma-3-270m-it-ONNX',device:'webgpu',dtype:'q4f16',name:'Gemma 3 270M (WebGPU)'}
+};
+let gpuOK=false, running=false, transformers=null, generator=null, loadedKey=null;
+let logs=[];
+function writeLog(message){const time=new Date().toLocaleTimeString('fr-FR');logs.push(`${time} | ${message}`);$('log').textContent=logs.join('\n');}
+function status(message){$('status').textContent=message;writeLog(message);}
+function reportError(e){const message=String(e?.stack||e?.message||e);$('error').style.display='block';$('error').textContent='Erreur détectée : '+message;writeLog('ERREUR : '+message);}
+function busy(on){running=on;$('small').disabled=on||!isHttp();$('japanese').disabled=on||!isHttp()||!gpuOK;$('recheck').disabled=on;}
+function isHttp(){return location.protocol==='https:' || (location.protocol==='http:' && ['localhost','127.0.0.1'].includes(location.hostname));}
+async function diagnose(){
+ logs=[];writeLog('URL : '+location.href);writeLog('Navigateur : '+navigator.userAgent);
+ writeLog('Contexte sécurisé : '+window.isSecureContext);writeLog('Protocole : '+location.protocol);
+ writeLog('Mémoire signalée (approx.) : '+(navigator.deviceMemory??'non exposée')+' Go');
+ writeLog('Threads CPU signalés : '+(navigator.hardwareConcurrency??'non exposés'));
+ gpuOK=false;
+ if(navigator.gpu && window.isSecureContext){
+   try {const adapter=await navigator.gpu.requestAdapter({powerPreference:'low-power'});gpuOK=!!adapter;}
+   catch(e){writeLog('Erreur WebGPU : '+String(e?.message||e));}
+ }
+ writeLog('Adaptateur WebGPU utilisable : '+(gpuOK?'oui':'non'));
+ const protocolOK=isHttp();
+ let html='';
+ if(!protocolOK){html='<strong>⛔ Ouverture locale détectée.</strong> Le test IA est désactivé. Mets <code>test-ia.html</code> dans ton dépôt GitHub, puis ouvre <code>https://nillosx.github.io/Kanji/test-ia.html</code> après publication.';}
+ else{html='<strong>✅ Page hébergée correctement.</strong> WebGPU : <strong>'+(gpuOK?'disponible':'indisponible')+'</strong>. '+(gpuOK?'Tu peux essayer les deux modèles.':'Commence par le test CPU léger ; le modèle japonais WebGPU n’est pas proposé sur cet appareil.');}
+ $('diagnostic').innerHTML=html;$('diagnostic').className='note '+(protocolOK?'good':'bad');busy(false);
+}
+async function start(which){
+ if(running||!isHttp())return;
+ const conf=modelSettings[which];if(!conf)return;
+ if(which==='japanese'&&!gpuOK){status('WebGPU absent : test japonais impossible avec ce profil.');return;}
+ if(loadedKey && loadedKey!==which){status('Recharge la page avant de changer de modèle, pour libérer la mémoire du premier.');return;}
+ busy(true);$('progress').hidden=true;$('progress').value=0;$('error').style.display='none';$('output').textContent='';
+ const start=performance.now();
+ try{
+   status('Chargement de la bibliothèque Transformers.js…');
+   if(!transformers)transformers=await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1');
+   const {pipeline,env}=transformers;
+   env.allowLocalModels=false;
+   env.useBrowserCache=true;
+   if(which==='small'){
+     env.backends.onnx.wasm.numThreads=1;
+     env.backends.onnx.wasm.proxy=false;
+   }
+   if(!generator){
+     status('Téléchargement de '+conf.name+'…');
+     const progress_callback=(event)=>{
+       if(event.status==='progress'&&typeof event.progress==='number'){
+         $('progress').hidden=false;
+         $('progress').value=Math.round(event.progress);
+         $('status').textContent=`Téléchargement : ${Math.round(event.progress)} % (${event.file||'modèle'})`;
+       }
+       if(event.status==='initiate')writeLog('Fichier : '+(event.file||'inconnu'));
+       if(event.status==='done')writeLog('Téléchargement terminé : '+(event.file||'fichier'));
+     };
+     generator=await pipeline('text-generation',conf.id,{device:conf.device,dtype:conf.dtype,progress_callback});
+     loadedKey=which;
+   }
+   status('Modèle initialisé. Génération en cours (cela peut être lent)…');
+   const selected=$('kanji').value.trim();
+   const messages=which==='small'
+   ?[{role:'user',content:`Write one very short sentence about a mountain and river. If you can, use Japanese characters ${selected}. Output only the sentence.`}]
+   :[{role:'user',content:`やさしい日本語で、漢字「${selected}」を使って、短い文を2つ書いてください。できるだけJLPT N5の言葉を使ってください。日本語の文だけを書いてください。`}];
+   const result=await generator(messages,{max_new_tokens:72,do_sample:false,return_full_text:false});
+   let generated=result?.[0]?.generated_text;
+   if(Array.isArray(generated))generated=generated.map(item=>item?.content||'').join('\n');
+   else if(generated&&typeof generated==='object')generated=generated.content||JSON.stringify(generated);
+   $('output').textContent=String(generated||JSON.stringify(result));
+   status('Génération terminée en '+((performance.now()-start)/1000).toFixed(1)+' s.');
+   writeLog('Modèle : '+conf.id+' / '+conf.device+' / '+conf.dtype);
+ }catch(e){status('Échec du test (une erreur JavaScript a été détectée).');reportError(e);}
+ finally{busy(false);}
+}
+$('recheck').addEventListener('click',diagnose);
+$('small').addEventListener('click',()=>start('small'));
+$('japanese').addEventListener('click',()=>start('japanese'));
+$('copy').addEventListener('click',async()=>{const str=logs.join('\n');try{await navigator.clipboard.writeText(str);status('Rapport copié.');}catch(e){$('log').focus();$('log').textContent=str+'\n\nSélectionne ce texte et copie-le pour le transmettre.';}});
+window.addEventListener('error',e=>writeLog('Erreur globale : '+e.message));
+window.addEventListener('unhandledrejection',e=>writeLog('Promesse rejetée : '+String(e.reason?.message||e.reason)));
+diagnose();
+</script>
+</body></html>
